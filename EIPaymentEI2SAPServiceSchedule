@@ -1,0 +1,21 @@
+/**
+ * Created by BxNe on 10/09/2017.
+ */
+/**************************************************************************************************
+Apex Class Name      :  EIPaymentEI2SAPServiceSchedule
+Version              :  1.0
+Created Date         :  Oct 10, 2017
+Function             :  Scheduler class for EI to SAP
+Modification Log     :
+*--------------------------------------------------------------------------------------------------
+* Developer                   Date                   Description
+* -------------------------------------------------------------------------------------------------
+* bxne                        10/9/2017              First Iteration
+***************************************************************************************************/
+global class EIPaymentEI2SAPServiceSchedule implements Schedulable {
+    global void execute(SchedulableContext SC) {
+        list<string> setPaymentType = new list<String>{'EV_LCFS', 'EV_SITE', 'ESA'};
+        EIPaymentEI2SAPServiceBatch paymentBatch = new EIPaymentEI2SAPServiceBatch(setPaymentType);
+        database.executeBatch(paymentBatch);
+    }
+}

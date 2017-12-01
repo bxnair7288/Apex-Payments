@@ -1,0 +1,486 @@
+/**************************************************************************************************
+Apex class Name      :  EIPaymentEI2SAPServiceBatch
+Version              :  1.0
+Created Date         :  7/10/2017
+Function             :  Batch web service to integrate with SAP. Executes batch by program type, example; 
+                     :  (EV SITE, EI CEER, EV LCFS, ESA_EPO etc)
+                     :  and formats data in JSON format using EIPaymentEI2SAPWrapper class.
+                     :  This class will then deserialize the Json object into string format and uses
+                     :  HTTP Post method to post data into SAP web service set in endpoint URL, below.
+                     :  All successfully processed and sent payment data are then flagged as "Sent to SAP" 
+                     :  so that it is not picked up and processed again. 
+                     :  When processing is complete, email gets sent out with detail log of the batch process.
+Story                :  STY-
+Work Task            :  TSK-
+Modification Log     :
+*--------------------------------------------------------------------------------------------------
+* Developer            Date                   Description
+* -------------------------------------------------------------------------------------------------
+* Balaram            7/10/2017                  Created.
+***************************************************************************************************/
+global class EIPaymentEI2SAPServiceBatch implements Database.Batchable<sObject>, Database.AllowsCallouts, Database.Stateful {
+        
+    global String paymentQuery;
+    global Integer totalRecCount = 0, totalValidAppCnt=0, totalInvalidAppCnt=0;
+    global Decimal totalAmount999 = 0.00;
+    global final string headerForExcel = 'PAYMENT ID\t PAYABLE TO\t AMOUNT\t APPROVER LANID\t ERROR \n';
+    global String finalExcelStr = headerForExcel;
+    global String recordString;
+    global static String batchId = 'EIBATCH';
+    global static date runDate; 
+
+    //Read custom settings to get EV Site parameters!
+    //List<Payments_Settings_CS__c>lstPaymentSetting = Payments_Settings_CS__c.getall().values();  
+    //global static Payments_Settings_CS__c paymentCustomSetting = Payments_Settings_CS__c.getInstance('ESA');
+    global static EIPaymentEI2SAPWrapper jsonPayment = new EIPaymentEI2SAPWrapper();
+    global static EIPaymentEI2SAPWrapper.d dWrap = new EIPaymentEI2SAPWrapper.d();
+    global static List<EIPaymentEI2SAPWrapper.Invoices> invoiceWrapperList = new List<EIPaymentEI2SAPWrapper.Invoices>();
+
+    global Set<String> paymentStatusSet = new Set<String>{'Pending Payment', 'R - Reissue'};
+//    global Set<String> paymentRecordTypeSet = new Set<String>{'EV_LCFS', 'EV_SITE', 'ESA'};
+    global list<String> paymentRecordTypelist = new list<String>();
+    global Payments_Settings_CS__c paymentCustomSetting = new Payments_Settings_CS__c();
+    global string paymentTypestr;
+
+    global List<processControls> processControlList;   
+    global processControls processControlsObj;
+       
+    /**
+    * @Description: Constructor 
+    * @Parameter: None
+    * @Return: None
+    * @USage: 
+    **/
+    private String strParameter;
+    global  EIPaymentEI2SAPServiceBatch(list<string> recordTypeName) {
+        paymentRecordTypelist = recordTypeName;
+        String  processType = 'Energy Insight';
+        Integer rowCount=0;     
+         
+        paymentQuery =  'SELECT Id, Name, Invoice_Date__c, Payee_Address_EI__c, Payee_City_EI__c,';
+        paymentQuery += ' Payee_State_EI__c, Payee_Zip_EI__c,Payee_Name_EI__c, Payee_Attention_To_EI__c,';
+        paymentQuery += ' Check_Status__c, Program_Code_EI__c, Approvers_Corp_ID__c,';
+        paymentQuery += ' Reference_Number__c, Check_Description__c, Total_Incentive_EI__c,' ;
+        paymentQuery += ' Vendor_Number__c, Order_Number__c, GL_Account_Code__c, EI_To_SAP_Date__c, ';
+        paymentQuery += ' F_Payee_Name_SAP_1__c, F_Payee_Name_SAP_2__c ';        
+        paymentQuery += ' FROM EI_Payment__c';
+        paymentQuery += ' WHERE Check_Status__c IN :paymentStatusSet';
+        paymentQuery += ' AND EI_Payment__c.RecordType.DeveloperName IN :paymentRecordTypelist';
+        paymentQuery += ' AND EI_To_SAP_Date__c = null ORDER BY Name ';
+                          
+        system.debug('@@@query____'+paymentQuery);
+        
+        //paymentCustomSetting = Payments_Settings_CS__c.getInstance('ESA');
+        paymentTypestr = recordTypeName[0];
+        paymentCustomSetting = Payments_Settings_CS__c.getInstance(paymentTypestr);
+        system.debug('@@@Custom setting____'+paymentCustomSetting);
+    }
+ 
+    /**
+    * Method name  : start
+    * Description  :
+    * Return Type  : Database.QueryLocator
+    * Parameter    : Database.BatchableContext
+    **/
+    global Database.QueryLocator start(Database.BatchableContext BC) {
+        system.debug('@@@Here...QueryLocator');
+        return Database.getQueryLocator(paymentQuery);
+    }
+            
+    /**
+    * Method name  : execute
+    * Description  : 
+    * Return Type  : void
+    * Parameter    : Database.BatchableContext, List<sObject>
+    **/
+    global void execute(Database.BatchableContext BC, List<sObject> scope) {
+    
+        system.debug('@@@Here...execute database line 1');
+        
+        List<EI_Payment__c> paymentList = (List<EI_Payment__c>)scope;
+        List<EI_Payment__c> paymentUpateList = new List<EI_Payment__c>();
+        processControlsObj = new processControls();
+    
+        String errorVal = '';
+        String INVALID_APPROVER = 'Invalid Payment Approver LAN ID - ';
+        String INVALID_INVOICEDATE = 'Invalid Invoice Date';
+        String INVALID_PAYABLETO = 'Invalid Payable To';
+        String INVALID_ADDRESS = 'Invalid Address';
+        String INVALID_CITY = 'Invalid City';
+        String INVALID_STATE = 'Invalid State';
+        String INVALID_ZIP = 'Invalid Zip code';
+        String INVALID_AMOUNT = 'Invalid Amount';
+        String INVALID_GLCODE = 'Invalid GL A/C';
+        String INVALID_ORDERNUMBER = 'Invalid Order#';
+        String recordString='';
+        //String headerForExcel = 'PAYMENT ID\t PAYABLE TO\t AMOUNT\t APPROVER LANID\t ERROR \n';
+        //String finalExcelStr = headerForExcel;
+        String jsonPayload;
+        integer i=0;
+
+        runDate = date.today(); 
+        batchId += string.valueOf(datetime.now().format('mmddyyhhmmss')); 
+        system.debug('@@@Batch ID ....' + batchId);
+        //runDate = null;
+
+        try{
+            //lstUpdatePayments= DataBase.Query(paymentQuery);
+            
+            system.debug('@@@Here...execute database');
+            system.debug('@@@lstUpdatePayments Size ____'+paymentList.size() + ' / ' + paymentList);            
+
+            for (EI_Payment__c payment : paymentList) {     
+                 i++;        
+                    
+                 system.debug('@@@IN for payment____'+payment.name);  
+                 system.debug('@@@Row Number____'+i);                                                                      
+                                          
+                 totalRecCount++;
+                 //Bypass validation for ESA as Vendor is passed to SAP for payment processing
+                 //Validate payee name, address, incentive amount etc
+                 if (paymentTypestr != 'ESA') {
+                    if (payment.Payee_Name_EI__c == null)
+                        errorVal = (errorVal == '') ? INVALID_PAYABLETO : errorVal + ' / ' + INVALID_PAYABLETO;
+
+                    if (payment.Payee_Address_EI__c == null)
+                         errorVal = (errorVal == '') ? INVALID_ADDRESS : errorVal + ' / ' + INVALID_ADDRESS;
+
+                    if (payment.Payee_City_EI__c == null)
+                         errorVal = (errorVal == '') ? INVALID_CITY : errorVal + ' / ' + INVALID_CITY;
+
+                    if (payment.Payee_State_EI__c == null)
+                         errorVal = (errorVal == '') ? INVALID_STATE : errorVal + ' / ' + INVALID_STATE;
+
+                    if (payment.Payee_Zip_EI__c == null)
+                        errorVal = (errorVal == '') ? INVALID_ZIP : errorVal + ' / ' + INVALID_ZIP;
+                 }
+                
+                 if (payment.Total_Incentive_EI__c == null || payment.Total_Incentive_EI__c == 0.00)
+                     errorVal = (errorVal == '') ? INVALID_AMOUNT : errorVal + ' / ' + INVALID_AMOUNT;
+
+                 if (payment.GL_Account_Code__c == null)
+                     errorVal = (errorVal == '') ? INVALID_GLCODE : errorVal + ' / ' + INVALID_GLCODE;
+
+                 if (payment.Order_Number__c == null)
+                     errorVal = (errorVal == '') ? INVALID_ORDERNUMBER : errorVal + ' / ' + INVALID_ORDERNUMBER;
+
+                 if (string.isBlank(errorVal)) {
+                     system.debug('@@@ NO ERRORS! : ');
+                     totalValidAppCnt++;
+
+                     processControlsObj.setControlsFromEI(payment.Total_Incentive_EI__c);
+
+                     payment.EI_To_SAP_Date__c = runDate;
+                     paymentUpateList.add(payment);
+                     /**
+                     * Call formatJSONPayments method to set payment data in JSON object.
+                     **/                     
+                     formatJSONPayments(payment);    
+                                           
+                 }else{
+                    
+                      system.debug('@@@ Data Errors : ' + recordString );
+                      totalInValidAppCnt++;
+                 }
+                 
+                 recordString = payment.Name + '\t' + payment.Payee_Name_EI__c + '\t' + payment.Total_Incentive_EI__c + '\t' + payment.Approvers_Corp_ID__c + '\t' + errorVal + '\n';
+                 finalExcelStr = finalExcelStr + recordString;
+                 
+                 errorVal = '';
+            }
+  
+            //Wrap list of all Invoices in Payment wrapper object!
+            dWrap.BatchID = batchId;
+            dWrap.Invoices = invoiceWrapperList;
+            jsonPayment.d = dWrap;
+            
+            /*
+            * Serialize Json object contents and set it in jsonPayload String
+            * Serialize will convert object into string
+            */
+            jsonPayload = JSON.serialize(jsonPayment);
+            system.debug('@@@FINAL PAYLOAD____'+jsonPayload);
+                        
+            //Send payLoad to SAP via HTTP Request and update Controls!
+            integer postResults = postEIOutboundPayments(jsonPayload);
+
+            //Update payment records to set as sent to SAP!
+            //update paymentUpateList;
+            /**
+            Update Payment records to set as sent to SAP!
+            **/
+            if (string.valueOf(postResults).substring(0,2) == '20'){        //201=Created in SAP
+                String sysAdminError; 
+                if(paymentUpateList.size() > 0) {
+                    system.debug ('@@@Payment List size for create Payment records: '+paymentUpateList.size());
+                
+                    Database.SaveResult[] lsr1 = Database.update(paymentUpateList, false);
+                    for(integer j =0; j< lsr1.size(); j++) {
+                        if(!lsr1[j].isSuccess()) {
+                            sysAdminError += lsr1[j].getErrors()[0].getMessage()+'\n';
+                        }
+                    }
+                
+                }             
+                if(!String.isBlank(sysAdminError)) {
+                    EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('EIPaymentEI2SAPServiceBatch', new EI_BatchException(sysAdminError)));
+                }
+            }            
+            //Send email with log!
+            system.debug('@@@@Final Excel String....'+finalExcelStr);
+            //sendOutboundEmail(totalRecCount, finalExcelStr);            
+        }
+        catch (Exception exp)
+        {
+          system.debug('Payment error: '+exp.getMessage()+'____'+exp.getLineNumber());
+           EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('EIPaymentService', new EI_BatchException(exp.getMessage()+'____'+exp.getLineNumber())));
+        }
+    }
+
+    /**
+    * Method name  : formatJSONPayments 
+    * Description  : 
+    * Return Type  : void
+    * Parameter    : EI_Payment__c payment record>
+    **/    
+    public void formatJSONPayments (EI_Payment__c payment){
+        String payeeAddress; 
+
+        /*
+        Create a new instance of Invoice to Vendor object and load it's items!
+        */ 
+        EIPaymentEI2SAPWrapper.InvoiceToVendor objInvoiceToVendor = new EIPaymentEI2SAPWrapper.InvoiceToVendor();        
+        objInvoiceToVendor.DocNumber=payment.Reference_Number__c;
+        objInvoiceToVendor.PostingKey=paymentCustomSetting.Posting_Key__c != null ? paymentCustomSetting.Posting_Key__c:'';
+        if (paymentTypestr != 'ESA') {
+            objInvoiceToVendor.VendorNo=paymentCustomSetting.Vendor_Number__c;
+        } else {
+            objInvoiceToVendor.VendorNo= payment.Vendor_Number__c;
+        }
+        objInvoiceToVendor.PaymentTerm=paymentCustomSetting.Payment_Term__c;
+        objInvoiceToVendor.PaymentMethod=paymentCustomSetting.Payment_method__c;
+        objInvoiceToVendor.PayMethodSup=paymentCustomSetting.Payment_Supplement_Code__c;
+        objInvoiceToVendor.Amount=string.valueOf(payment.Total_Incentive_EI__c);
+        objInvoiceToVendor.DiscountAmt='0.00';
+        objInvoiceToVendor.TaxAmt='0.00';                    
+        objInvoiceToVendor.BaselineDate=null;
+        objInvoiceToVendor.Allocation='';
+        objInvoiceToVendor.Text=payment.Check_Description__c;
+        objInvoiceToVendor.Name1=payment.F_Payee_Name_SAP_1__c != null ?payment.F_Payee_Name_SAP_1__c.toUpperCase():'';
+        objInvoiceToVendor.Name2=payment.F_Payee_Name_SAP_2__c != null ?payment.F_Payee_Name_SAP_2__c.toUpperCase():'';
+        objInvoiceToVendor.Name3='';
+        objInvoiceToVendor.Name4='';
+        if (paymentTypestr != 'ESA'){
+          if (payment.Payee_Address_EI__c.length() > 35){
+              payeeAddress = payment.Payee_Address_EI__c.substring(0,34);
+          } else {
+              payeeAddress = payment.Payee_Address_EI__c.toUpperCase() != null?payment.Payee_Address_EI__c.toUpperCase():'';
+          }
+        }
+        objInvoiceToVendor.Street=payeeAddress;
+        objInvoiceToVendor.City=payment.Payee_City_EI__c;
+        objInvoiceToVendor.Region=payment.Payee_State_EI__c;
+        objInvoiceToVendor.PostalCode=payment.Payee_Zip_EI__c;
+        objInvoiceToVendor.Country='US';
+        objInvoiceToVendor.WithholdTxcd='';
+        objInvoiceToVendor.WithholdTxid1='';
+        objInvoiceToVendor.WithholdTxid2='';
+        objInvoiceToVendor.InvoiceRef='';
+        objInvoiceToVendor.InvoiceYear='';
+        objInvoiceToVendor.InvoiceItem='';
+              
+        /*            
+        Create a List to hold all Invoice Items - there is only one invoice item per invoice for a EV Site application!            
+        Create a new instance of Invoice to Item object and load items to object!       
+        */
+        List<EIPaymentEI2SAPWrapper.InvoiceToItems> lstItems = new List<EIPaymentEI2SAPWrapper.InvoiceToItems>();        
+        EIPaymentEI2SAPWrapper.InvoiceToItems objInvoiceToItems = new EIPaymentEI2SAPWrapper.InvoiceToItems();        
+        objInvoiceToItems.DocNumber=payment.Reference_Number__c;        
+        objInvoiceToItems.ItemNo='0000000001';
+        //    if(!lstPaymentSetting.isEmpty())
+        objInvoiceToItems.PostingKey=paymentCustomSetting.Posting_Key_Invoice_Items__c != null ? paymentCustomSetting.Posting_Key_Invoice_Items__c:'';
+        objInvoiceToItems.GlAccount=payment.GL_Account_Code__c;
+        objInvoiceToItems.BusArea='';
+        objInvoiceToItems.CostCenter='';
+        objInvoiceToItems.Amount=string.valueOf(payment.Total_Incentive_EI__c);
+        objInvoiceToItems.Allocation='';
+        objInvoiceToItems.Text='';
+        objInvoiceToItems.OrderNumber=payment.Order_Number__c;
+        objInvoiceToItems.Project='00000000';
+        objInvoiceToItems.TaxCode='';
+        objInvoiceToItems.TaxJurdCode='';
+        objInvoiceToItems.OperationActivity='';
+        lstItems.add(objInvoiceToItems);
+
+        /*
+        Create a new instance of Invoices Object and load it's items!
+        */
+        EIPaymentEI2SAPWrapper.Invoices objInvoices = new EIPaymentEI2SAPWrapper.Invoices();     
+        Datetime dt = datetime.newInstance(payment.Invoice_Date__c.year(), payment.Invoice_Date__c.month(),payment.Invoice_Date__c.day());
+        //string dateValue = system.now().format('MMddyyyyHHmmss');
+        string dateValue = dt.format('yyyy-MM-dd') + 'T00:00:00';                
+        objInvoices.DocNumber = payment.Reference_Number__c;
+        //objD.DocDate = payment.Invoice_Date_EI__c.format();
+        //objInvoices.DocDate ='2017-08-24T00:00:00';
+        objInvoices.DocDate = dateValue;
+        objInvoices.DocType = paymentCustomSetting.Document_Type__c;
+        objInvoices.DocCurrency = paymentCustomSetting.Document_Currency__c;
+        objInvoices.CompanyCode = paymentCustomSetting.Company_Code__c;
+        objInvoices.PostingDate = system.now().format('yyyy-MM-dd') + 'T' + system.now().format('HH:mm:ss');
+        if (payment.Approvers_Corp_ID__c != null) objInvoices.DocHdrTxt = payment.Approvers_Corp_ID__c.toUpperCase();
+        objInvoices.ArchDocType ='';
+        objInvoices.ArchBarCode='';            
+        
+        //Set Invoice to Vendor object onto Invoices object.             
+        objInvoices.InvoiceToVendor = objInvoiceToVendor;
+        
+        //Set Invoice to Items object onto Invoices object 
+        objInvoices.InvoiceToItems = lstItems;
+ 
+        //Add Invoices object instance to Invoice Wrapper List!       
+        invoiceWrapperList.add(objInvoices);
+                    
+        //system.debug('@@@Inside Format JSON Payments...List of Invoices____'+invoiceWrapperList);
+                            
+    }
+  
+    /**
+    * @Description: This method will send the Payments records ready for check processing.
+    * @Parameter: None
+    * @Return: LIST<Payments>
+    * @Usage: Send the Payment records to SAP for check processing
+    **/
+    //@HttpPost
+    
+    public integer postEIOutboundPayments(String payLoad) {
+        // String endPointURL = 'callout:SAP_Layer7_New/dev/CustomerCare/v1/ZFI_PAYMENT_SERVICE_SRV/$batch';
+        String endPointURL = 'callout:SAP_Layer7/InvoiceBatchSet';
+        
+        try {
+            Http httpReq = new Http();
+            httpRequest req = new httpRequest();
+  
+            req.setEndpoint(endPointURL);
+            req.setMethod('POST');
+            req.setHeader('Accept', 'application/json');
+            req.setHeader('Content-Type', 'application/json');
+            req.setHeader('X-Requested-With', 'XMLHttpRequest');
+            req.setBody(payLoad);
+        
+            HttpResponse res = httpReq.send(req);
+            
+            if (res !=null) {
+            
+                system.debug('###totalinvoices___'+res.getHeader('totalinvoices'));
+                system.debug('###totalamount___'+res.getHeader('totalamount'));
+                
+                Integer totalInvoices = Integer.ValueOf(string.IsNotBlank(res.getHeader('totalinvoices'))? res.getHeader('totalinvoices'):'0'); 
+                decimal totalAmount   = decimal.ValueOf(string.IsNotBlank(res.getHeader('totalamount'))? res.getHeader('totalamount'):'0'); 
+                Integer statusCode    = Integer.ValueOf(res.getStatusCode());
+                
+                processControlsObj.setControlsFromSAP(statusCode, res.getStatus(), totalInvoices, totalAmount);
+                //processControlsObj.setControlsFromSAP(200, '200', 101, 100);              
+            }
+            
+            system.debug('###Response from SAP Status code___'+res.getStatusCode());
+            system.debug('###Response from SAP Body___'+res.getBody());
+            system.debug('###Response from SAP Body Status___'+res.getStatus());
+            
+            return res.getStatusCode();
+        }
+        catch (Exception exp)
+        {
+          system.debug('Payment HTTP error: '+exp.getMessage()+'____'+exp.getLineNumber());
+          EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('EIPaymentServiceBatch', new EI_BatchException(exp.getMessage())));
+          return null;
+        }
+    }
+        
+    public void sendOutboundEmail(Integer totalRecCount, string finalExcelStr){
+    
+        //string strEmailList = system.label.EIPaymentEITOSAPEmailList;
+        string strEmailList = paymentCustomSetting.EI_To_SAP_Email__c;
+        system.debug ('@@@Email....'+ strEmailList);
+        string strEmailSubject = 'EV Site Payment Batch Upload Processed';
+        string strEmailBody;
+        string strProgram = paymentCustomSetting.Name.deleteWhiteSpace();
+        string fileName = 'EI_' + strProgram + 'TOSAP_' + Datetime.now().format('MM-dd-YYYY') + '.xls';
+        //filename = fileName + Datetime.now().format('MM-dd-YYYY') + '.csv';
+        //'Run Date/Time: '+ string.valueof(Datetime.now().format('MM-dd-YYYY\' \'HH:mm:ss'))
+        if (totalRecCount != 0) {
+            
+            strEmailBody = '';
+            strEmailBody = ('Attached file has the details of Invoices posted to SAP on: ' + string.valueof(Datetime.now().format('MM-dd-YYYY\' \'HH:mm:ss')) + '<br/><br>' +
+                    'Total invalid payment count (in EI): ' + totalInValidAppCnt + '<br/><br><br>' +
+                    'Total valid payment row count (sent from EI):   ' + processControlsObj.ei2SapTotalRecCount + '<br/><br>' +                    
+                    'Total valid payment row count (response received from SAP):   ' + processControlsObj.sap2EITotalRecCount + '<br/><br>' +                    
+                    'Total amount processed (sent from EI): ' + processControlsObj.ei2SapTotalAmount + '<br/><br>' +
+                    'Total amount processed (response received from SAP): ' + processControlsObj.sap2EITotalAmount + '<br/><br><br>' +
+                    'HTTP Response status (received from SAP):   ' + processControlsObj.sap2EIrestStatusCode + ' / ' + processControlsObj.sap2EIrestStatus + '<br/><br>' 
+            );
+            if (processControlsObj.sap2EIrestStatusCode != 201) {
+                strEmailBody += '***IMPORTANT*** Response status received from SAP is Invalid ***, please contact Energy Insight Support team!' + '<br/><br>';
+            }               
+            if (processControlsObj.ei2SapTotalRecCount != processControlsObj.sap2EITotalRecCount || processControlsObj.ei2SapTotalAmount != processControlsObj.sap2EITotalAmount ){
+                strEmailBody += '***IMPORTANT*** Control totals between EI/SAP doesn\'t match! ***, please contact Energy Insight Support team to investigate the mismatch!' + '<br/><br><br>';             
+            }                                                               
+            
+        } else {
+            strEmailBody = ('There are no applications to process in this batch on: ' + string.valueof(Datetime.now().format('MM-dd-YYYY\' \'HH:mm:ss')) + '<br/><br>');
+        }
+        EV_PaymentUtility paymentUtility = new EV_PaymentUtility();
+        paymentUtility.sendEmailWithAttachment(strEmailList, strEmailSubject, strEmailBody, finalExcelStr, fileName, true);
+    
+    }
+    
+    /*
+    This class is used for control processing.
+    It is used to store and check the number of records and total amount passed from EI to SAP matches with
+    control total returned by SAP, after records are created in their staging tables.
+    This match/mismatch control is reported in the Email sent out in the finish method!
+    */
+    class processControls {
+    
+        public long     ei2SapTotalRecCount {get; set;}
+        public decimal  ei2SapTotalAmount {get; set;}
+        public long     sap2EITotalRecCount {get; set;}
+        public decimal  sap2EITotalAmount {get; set;} 
+        public integer  sap2EIrestStatusCode {get; set;}
+        public string   sap2EIrestStatus {get; set;}
+        
+        public processControls () {
+        
+               ei2SapTotalRecCount = 0;
+               ei2SapTotalAmount =  0.00;
+               sap2EITotalRecCount = 0;
+               sap2EITotalAmount = 0.00;
+               sap2EIrestStatusCode = null;
+               sap2EIrestStatus = null;        
+        }
+        
+        public void setControlsFromEI (decimal ei2SapAmount) {
+        
+               ei2SapTotalRecCount++;
+               ei2SapTotalAmount +=  ei2SapAmount;        
+        }
+            
+        public void setControlsFromSAP (integer statusCode, string statusDesc, long recCount, decimal totalAmt) {
+
+               sap2EITotalRecCount = recCount;
+               sap2EITotalAmount =  totalAmt;
+               sap2EIrestStatusCode = statusCode;
+               sap2EIrestStatus     = statusDesc;
+                                      
+        }            
+    }    
+    
+    /**
+    * Method name  : finish
+    * Description  : 
+    * Return Type  : void
+    * Parameter    : Database.BatchableContext 
+    **/
+    global void finish(Database.BatchableContext BC) {
+        sendOutboundEmail(totalRecCount, finalExcelStr); 
+    }    
+}

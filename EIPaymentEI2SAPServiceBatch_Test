@@ -1,0 +1,103 @@
+/**************************************************************************************************   
+Apex Batch Name      :  EIPaymentEI2SAPServiceBatch_Test
+Version              :  1.0                                                                          
+Created Date         :  9/16/2017                                                              
+Function             :  Test class to send payment data to SAP.
+Story                :  STY-                                                                            
+Work Task            :                                                                            
+Modification Log     :                                                                            
+*--------------------------------------------------------------------------------------------------  
+* Developer                 Date                   Description                                     
+* -------------------------------------------------------------------------------------------------  
+* Balaram Nair              9/16/2017             First Iteration  
+***************************************************************************************************/
+@isTest
+public class EIPaymentEI2SAPServiceBatch_Test{
+    static testmethod void testEIPaymentEI2SAPServiceBatch(){
+
+        String PORTFOLIO_NAME = 'Portfolio Name';
+        String PORTFOLIO_RECORDTYPE = 'Portfolio';
+        String PORTFOLIO_TYPE = 'PG&E Sales';
+        EI_Program__c programRec;
+         
+         //create EEGA record
+        EI_EEGA__c eegRec = PM_EI_TestDataUtility.createEEGA('TestEEG');
+        insert eegRec;
+        
+        //create Portfolio
+        EI_Portfolio__c portfolioRec = PM_EI_TestDataUtility.createPortfolio(PORTFOLIO_NAME, PORTFOLIO_RECORDTYPE, null, PORTFOLIO_TYPE);
+        portfolioRec.EEGA_EI__c = eegRec.Id;
+        insert portfolioRec;
+        
+        //Create Order Number
+        EI_Order_Number__c OrderNum = new EI_Order_Number__c();
+        OrderNum.name='Order123';
+        OrderNum.EEGA_EI__c = eegRec.Id;
+        OrderNum.Name = '3023397';
+        OrderNum.GL_Account_Code__c = '123456';
+        insert OrderNum;
+        
+        //create Program
+        programRec = PM_EI_TestDataUtility.createProgram(portfolioRec);
+        programRec.Pgm_Classification_EI__c = 'EV Site';
+        programRec.Pgm_Code_EI__c ='EVSITEHOST';
+        programRec.Order_Number_EI__c = OrderNum.Id;
+        insert programRec;
+ 
+//        Id siteRecordTypeId = Schema.SObjectType.EI_Payment__c.getRecordTypeInfosByName().get('EV SITE').getRecordTypeId();
+        Id siteRecordTypeId = Schema.SObjectType.EI_Payment__c.getRecordTypeInfosByName().get('ESA').getRecordTypeId();
+        
+        //This row is for Positive test
+        EI_Payment__c paymentRec = new EI_Payment__c(Program_EI__c = programRec.Id, Invoice_Date__c=system.today(),SAP_to_EI_Date__c=system.today(),Check_Number_EI__c='12345678',Check_Date_EI__c=system.today(),Check_Status__c='Pending Payment',recordTypeId = siteRecordTypeId, Payee_Address_EI__c='test',Payee_Name_EI__c='test',Payee_City_EI__c='test',Payee_State_EI__c='CA',Payee_Zip_EI__c='91001',Total_Incentive_EI__c=100,Check_Description__c='123');
+        insert paymentRec;
+        system.assertNotequals(paymentRec.Id,null);
+        Id payId = paymentRec.Id;
+        EI_Payment__c payRec = [select ID from EI_Payment__c where id = :payId];
+        
+        //This row is for Negative Test
+        EI_Payment__c paymentRec1 = new EI_Payment__c(Invoice_Date__c=system.today(),SAP_to_EI_Date__c=system.today(),Check_Number_EI__c='12345678',Check_Date_EI__c=system.today(),Check_Status__c='Pending Payment',recordTypeId = siteRecordTypeId, Payee_Address_EI__c=null,Payee_Name_EI__c=null,Payee_City_EI__c=null,Payee_State_EI__c=null,Payee_Zip_EI__c=null,Total_Incentive_EI__c=120.00,ESA_Order_Number_EI__c = '111', ESA_GL_Account_Code_EI__c = '123', Check_Description__c='123');
+        insert paymentRec1;
+        system.assertNotequals(paymentRec1.Id,null);
+                
+        Payments_Settings_CS__c csSetting = new Payments_Settings_CS__c(Name='EV SITE',Posting_Key__c='31',Vendor_Number__c='ZCEER',Payment_Term__c='PT10',Payment_method__c ='I',Payment_Supplement_Code__c='83',Document_Type__c='LV',Document_Currency__c='USD',Company_Code__c='PGE1',EI_To_SAP_Email__c='BXNE@PGE.COM');
+        insert csSetting;
+        system.assertNotequals(csSetting.Id,null);
+
+        Payments_Settings_CS__c csSetting1 = new Payments_Settings_CS__c(Name='ESA',Posting_Key__c='31',Vendor_Number__c='',Payment_Term__c='PT10',Payment_method__c ='',Payment_Supplement_Code__c='83',Document_Type__c='LV',Document_Currency__c='USD',Company_Code__c='PGE1',EI_To_SAP_Email__c='BXNE@PGE.COM');
+        insert csSetting1;
+        system.assertNotequals(csSetting1.Id,null);
+                        
+        Test.startTest();
+
+            Test.setMock(HttpCalloutMock.class, new EIPaymentMockHttpResponseGen());
+            
+            /*
+            Schedule ESA
+            */
+            list<string> setPaymentType = new list<String>{'ESA'};
+            EIPaymentEI2SAPServiceBatch sapServiceBatch = new EIPaymentEI2SAPServiceBatch(setPaymentType);
+            DataBase.executeBatch(sapServiceBatch);
+            
+            EIPaymentEI2SAPServiceSchedule_ESA paymentSchedule1 = new EIPaymentEI2SAPServiceSchedule_ESA();
+            String sch_esa = '0 0 23 * * ?';
+            system.schedule('Payment Schedule1', sch_esa, paymentSchedule1);     
+            
+            /*
+            Schedule EV Site
+            */
+            Id siteRecordTypeId1 = Schema.SObjectType.EI_Payment__c.getRecordTypeInfosByName().get('EV SITE').getRecordTypeId();        
+            EI_Payment__c paymentRec2 = new EI_Payment__c(Program_EI__c = programRec.Id, Invoice_Date__c=system.today(),SAP_to_EI_Date__c=system.today(),Check_Number_EI__c='12345678',Check_Date_EI__c=system.today(),Check_Status__c='Pending Payment',recordTypeId = siteRecordTypeId, Payee_Address_EI__c='test',Payee_Name_EI__c='test',Payee_City_EI__c='test',Payee_State_EI__c='CA',Payee_Zip_EI__c='91001',Total_Incentive_EI__c=100,Check_Description__c='123');
+            insert paymentRec2;
+            system.assertNotequals(paymentRec2.Id,null);
+            Payments_Settings_CS__c csSetting2 = new Payments_Settings_CS__c(Name='EV_SITE',Posting_Key__c='31',Vendor_Number__c='ZCEER',Payment_Term__c='PT10',Payment_method__c ='I',Payment_Supplement_Code__c='83',Document_Type__c='LV',Document_Currency__c='USD',Company_Code__c='PGE1',EI_To_SAP_Email__c='BXNE@PGE.COM');
+            insert csSetting2;
+            system.assertNotequals(csSetting2.Id,null);            
+                       
+            EIPaymentEI2SAPServiceSchedule_EVSite paymentSchedule = new EIPaymentEI2SAPServiceSchedule_EVSite();
+            String sch = '0 0 23 * * ?';
+            system.schedule('Payment Schedule', sch, paymentSchedule);     
+                                                      
+        Test.stopTest();
+         
+    }   
+}

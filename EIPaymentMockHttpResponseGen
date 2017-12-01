@@ -1,0 +1,26 @@
+/**************************************************************************************************   
+Apex Batch Name      :  EIPaymentMockHttpResponseGen 
+Version              :  1.0                                                                          
+Created Date         :  10/2/2017                                                              
+Function             :  Test class to send payment data to SAP.
+Story                :  STY-                                                                            
+Work Task            :                                                                            
+Modification Log     :                                                                            
+*--------------------------------------------------------------------------------------------------  
+* Developer                 Date                   Description                                     
+* -------------------------------------------------------------------------------------------------  
+* Balaram Nair              10/2/2017             First Iteration  
+***************************************************************************************************/
+@isTest
+global class EIPaymentMockHttpResponseGen implements HttpCalloutMock {
+   // Implement this interface method
+    global HTTPResponse respond(HTTPRequest req) {
+        HttpResponse res = new HttpResponse();
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('totalinvoices', '1');
+        res.setHeader('totalamount', '100');        
+        res.setBody('{"totalinvoices":"1","totalamount":"100"}');
+        res.setStatusCode(201);
+        return res;
+    }
+}

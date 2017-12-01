@@ -1,0 +1,99 @@
+/**************************************************************************************************   
+Apex Batch Name      :  EIPaymentSAP2EIConfirmation_Test
+Version              :  1.0                                                                          
+Created Date         :  7/20/2017                                                              
+Function             :  REST API class to process confirmation from SAP.
+Story                :  STY-                                                                            
+Work Task            :                                                                            
+Modification Log     :                                                                            
+*--------------------------------------------------------------------------------------------------  
+* Developer                 Date                   Description                                     
+* -------------------------------------------------------------------------------------------------  
+* Balaram Nair              9/15/2017             First Iteration  
+***************************************************************************************************/
+
+@istest
+public class EIPaymentSAP2EIConfirmation_Test {
+ 
+   static testMethod void  testEIPaymentSAP2EIConfirmation(){
+   
+        EI_Payment__c paymentRec = new EI_Payment__c(Check_Status__c='Pending Payment',Invoice_Date__c=system.today(),SAP_to_EI_Date__c=system.today(),Check_Number_EI__c='12345678',Check_Date_EI__c=system.today(),Payee_Name_EI__c='test');
+        EI_Payment__c paymentRec1 = new EI_Payment__c(Check_Status__c='Pending Payment',Invoice_Date__c=system.today(),SAP_to_EI_Date__c=system.today(),Check_Number_EI__c='12345678',Check_Date_EI__c=system.today(),Payee_Name_EI__c='test1');
+        EI_Payment__c paymentRec2 = new EI_Payment__c(Check_Status__c='Pending Payment',Invoice_Date__c=system.today(),SAP_to_EI_Date__c=system.today(),Check_Number_EI__c='4213644',Check_Date_EI__c=system.today(),Payee_Name_EI__c='test2');
+       
+        Payments_Settings_CS__c paymentCustomSetting = new Payments_Settings_CS__c(Name='EV SITE', SAP_To_EI_Email__c='bxne@pge.com');
+
+        insert(paymentRec);
+        insert(paymentRec1);
+        insert(paymentRec2);
+        insert(paymentCustomSetting); 
+            
+        EI_Payment__c  sNew = [select Id, Name from EI_Payment__c where id = : paymentRec.id];
+        EI_Payment__c  sNew1 = [select Id, Name from EI_Payment__c where id = : paymentRec1.id];
+        EI_Payment__c  sNew2 = [select Id, Name from EI_Payment__c where id = : paymentRec2.id];
+       
+        string  JsonMsg = '{';
+            JsonMsg += ' "PaymentDetails": [{';
+            JsonMsg += '"ReferenceNumber":' + '"' + sNew.Name +'",';
+            JsonMsg += '"DocDate": "Date(1506038400000)",';
+            JsonMsg += '"CheckNumber": "4213643",';
+            JsonMsg += '"DatePrinted": "Date(1506643200000)",';
+            JsonMsg += '"PaymentAmt": "      12000.75",';
+            JsonMsg += '"VendorName": "ZCEER",';
+            JsonMsg += '"PayeeName": "BN TESTING EPOQA1",';
+            JsonMsg += '"CheckStatus": "I",';
+            JsonMsg += '"DocPaymentNumber": "2060055018",';
+            JsonMsg += '"CheckCashedDate": null,';
+            JsonMsg += '"ErrorDescription": ""';
+            JsonMsg += '}, {';
+            JsonMsg += '"ReferenceNumber": "",';
+            JsonMsg += '"DocDate": "Date(1506038400000)",';
+            JsonMsg += '"CheckNumber": "4213644",';
+            JsonMsg += '"DatePrinted": "Date(1506643200000)",';
+            JsonMsg += '"PaymentAmt": "      19900.00",';
+            JsonMsg += '"VendorName": "ZCEER",';
+            JsonMsg += '"PayeeName": "TEST PAYER",';
+            JsonMsg += '"CheckStatus": "C",';
+            JsonMsg += '"DocPaymentNumber": "2060055019",';
+            JsonMsg += '"CheckCashedDate": null,';
+            JsonMsg += '"ErrorDescription": ""';
+            JsonMsg += '}, {';
+            JsonMsg += '"ReferenceNumber": "PMT - 00000003",';
+            JsonMsg += '"DocDate": "Date(1506038400000)",';
+            JsonMsg += '"CheckNumber": "4213642",';
+            JsonMsg += '"DatePrinted": "Date(1506643200000)",';
+            JsonMsg += '"PaymentAmt": "        140.00",';
+            JsonMsg += '"VendorName": "ZCEER",';
+            JsonMsg += '"PayeeName": "BN TEST1",';
+            JsonMsg += '"CheckStatus": "I",';
+            JsonMsg += '"DocPaymentNumber": "2060055017",';
+            JsonMsg += '"CheckCashedDate": null,';
+            JsonMsg += '"ErrorDescription": ""';
+            JsonMsg += '}]';
+            JsonMsg += '}';
+            
+            system.debug ('@@@ Rec1 Name : ' + paymentRec.Name);
+            system.debug ('@@@ Rec2 Name : ' + paymentRec1.Name);
+            system.debug ('@@@ Rec3 Name : ' + paymentRec2.Name);   
+            system.debug ('@@@ Rec11 Name : ' + sNew.Name);
+            system.debug ('@@@ Rec21 Name : ' + sNew2.Name);
+            system.debug ('@@@ Rec31 Name : ' + sNew1.Name);               
+            
+            system.debug ('@@@ Rec2 Check#: ' + paymentRec1.Check_Number_EI__c);         
+             
+
+        test.startTest();
+                   
+            RestRequest req = new RestRequest();
+            RestResponse res = new RestResponse();
+            req.requestURI = system.URL.getSalesforceBaseUrl().toExternalForm()+'/services/apexrest/EIPaymentService/PostPayments';
+            req.httpMethod = 'Post';
+            req.requestBody = Blob.valueof(JsonMsg);
+            RestContext.request = req;
+            RestContext.response= res;
+            
+            EIPaymentSAP2EIConfirmation.doPost();
+            
+        test.stopTest();
+   }
+}

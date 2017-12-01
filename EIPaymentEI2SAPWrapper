@@ -1,0 +1,89 @@
+public with sharing class EIPaymentEI2SAPWrapper {
+/**************************************************************************************************   
+Apex Controller Name :  EIPaymentEI2SAPWrapper
+Version              :  1.0                                                                          
+Created Date         :  7/17/2017                                              
+Function             :  This is a wrapper class for EIPaymentEI2SAPService. It contains JSON object set
+                        collections needed to be sent to SAP. This class is used to encode JSON object into string.
+Story                :  STY-00                                                                       
+Work Task            :  TSK-00  
+                                                                         
+Modification Log     :                                                                              
+*--------------------------------------------------------------------------------------------------  
+* Developer              Date                   Description                                     
+*-------------------------------------------------------------------------------------------------  
+* Balaram             7/17/2017                 First Iteration
+***************************************************************************************************/ 
+    
+    public d d;
+    
+    public class d {
+        public String BatchID;
+        public List<Invoices> Invoices;        
+    }
+
+    public class Invoices {
+        public String DocNumber;
+        public String DocDate;
+        public String DocType;
+        public String DocCurrency;
+        public String CompanyCode;
+        public Object PostingDate;
+        public String DocHdrTxt;
+        public String ArchDocType;
+        public String ArchBarCode;
+        public List<InvoiceToItems> InvoiceToItems;
+        public InvoiceToVendor InvoiceToVendor;
+    }
+
+    public class InvoiceToVendor {
+        public String DocNumber;
+        public String PostingKey;
+        public String VendorNo;
+        public String Amount;
+        public String DiscountAmt;
+        public String TaxAmt;
+        public String PaymentTerm;
+        public String PaymentMethod;
+        public String PayMethodSup;
+        public Object BaselineDate;
+        public String Allocation;
+        public String Text;
+        public String Name1;
+        public String Name2;
+        public String Name3;
+        public String Name4;
+        public String Street;
+        public String City;
+        public String Region;
+        public String PostalCode;
+        public String Country;
+        public String WithholdTxcd;
+        public String WithholdTxid1;
+        public String WithholdTxid2;
+        public String InvoiceRef;
+        public String InvoiceYear;
+        public String InvoiceItem;
+    }
+
+    public class InvoiceToItems {
+        public String DocNumber;
+        public String ItemNo;
+        public String PostingKey;
+        public String GlAccount;
+        public String BusArea;
+        public String CostCenter;
+        public String Amount;
+        public String Allocation;
+        public String Text;
+        public String OrderNumber;
+        public String Project;
+        public String TaxCode;
+        public String TaxJurdCode;
+        public String OperationActivity;
+    }
+    
+//    public static EIPaymentEI2SAPWrapper parse(String json) {
+//        return (EIPaymentEI2SAPWrapper) System.JSON.serialize(json, EIPaymentEI2SAPWrapper.class);
+//    }
+}

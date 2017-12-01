@@ -1,0 +1,39 @@
+public class EIPaymentSAP2EIJSONParse {
+/**************************************************************************************************   
+Apex Controller Name :  EIPaymentSAP2EIJSONParse 
+Version              :  1.0                                                                          
+Created Date         :  7/13/2017                                              
+Function             :  This parser class will deserialize JSON format coming in from SAP confirmation 
+                        process.
+Story                :  STY-00                                                                       
+Work Task            :  TSK-00  
+                                                                         
+Modification Log     :                                                                              
+*--------------------------------------------------------------------------------------------------  
+* Developer              Date                   Description                                     
+*-------------------------------------------------------------------------------------------------  
+* Balaram             7/13/2017                 First Iteration
+***************************************************************************************************/ 
+
+    public class PaymentDetail {
+        public String ReferenceNumber;
+        public String DocDate;
+        public String CheckNumber;
+        public String DatePrinted;
+        public String PaymentAmt;
+        public string VendorName;
+        public string PayeeName;
+        public String CheckStatus;
+        public String DocPaymentNumber;
+        public string CheckCashedDate;
+        public string ErrorDescription;
+    }
+    
+    public List<PaymentDetail> PaymentDetails;
+    
+
+    
+    public static EIPaymentSAP2EIJSONParse parse(String json) {
+        return (EIPaymentSAP2EIJSONParse) System.JSON.deserialize(json, EIPaymentSAP2EIJSONParse.class);
+    }
+}

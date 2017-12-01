@@ -1,0 +1,207 @@
+/**************************************************************************************************   
+Apex Batch Name      :  EIPaymentSAP2EIConfirmation 
+Version              :  1.0                                                                          
+Created Date         :  7/20/2017                                                              
+Function             :  REST API class to process confirmation from SAP.
+Story                :  STY-                                                                            
+Work Task            :                                                                            
+Modification Log     :                                                                            
+*--------------------------------------------------------------------------------------------------  
+* Developer                 Date                   Description                                     
+* -------------------------------------------------------------------------------------------------  
+* Balaram Nair              7/15/2017             First Iteration  
+***************************************************************************************************/
+
+@RestResource(urlMapping='/EIPaymentService/PostPayments/*')
+global with sharing class EIPaymentSAP2EIConfirmation {
+  @HttpPost
+    global static String doPost() {
+        string message ='';
+        integer totalValidAppCnt = 0;
+        try{
+            RestRequest req = RestContext.request;
+            Map<String,String> params = req.params;
+            String jsonVal = req.requestBody.toString();
+            string headerForExcel = 'PAYMENT NUMBER\t CHECK NUMBER\t PAYABLE TO\t AMOUNT\t CHECK STATUS\t CHECK ISSUE DT\t CHECK STOPPED DT\t DOCUMENT NUMBER\n';
+            string finalExcelStr = headerForExcel;
+            string recordString;           
+            
+            system.debug('###JSON Value_____'+jsonVal);
+            system.debug('###Req.params_____'+req.params);
+            
+            if(string.isNotblank(jsonVal)){
+                EIPaymentSAP2EIJSONParse paymentParse = EIPaymentSAP2EIJSONParse.parse(jsonVal);                
+                system.debug('###PaymentParse PaymentDetails_____'+paymentParse.PaymentDetails);
+                
+                //map to store Check Issues!
+                map<string,EIPaymentSAP2EIJSONParse.PaymentDetail>mapReferencePayment = new map<string,EIPaymentSAP2EIJSONParse.PaymentDetail>(); 
+                //map to store Check Cancellations!
+                map<string,EIPaymentSAP2EIJSONParse.PaymentDetail>mapCheckPayment = new map<string,EIPaymentSAP2EIJSONParse.PaymentDetail>(); 
+                
+                if(paymentParse != null && paymentParse.PaymentDetails != null ){
+                    /*
+                    * Load Maps with Reference Number (Application number) or Check Number.
+                    * When Reference number is not blank check status will be 'I' and it contains check information. 
+                    * When Reference number is blank it indicates check status is 'Cancelled' and check number is passed to EI from SAP as key.
+                    */
+                    for(EIPaymentSAP2EIJSONParse.PaymentDetail payDetails : paymentParse.PaymentDetails){
+                        
+                        if(string.isNotblank(payDetails.ReferenceNumber))
+                            mapReferencePayment.put(payDetails.ReferenceNumber,payDetails);
+                        
+                        if(string.isNotblank(payDetails.CheckNumber) && string.isblank(payDetails.ReferenceNumber))
+                            mapCheckPayment.put(payDetails.CheckNumber,payDetails);
+                    }
+                    /*
+                    * Loop through the Map and process payment records for check issues or cancellations!
+                    */
+                    if((mapReferencePayment != null && !mapReferencePayment.isEmpty()) || (mapCheckPayment != null && !mapCheckPayment.isEmpty())){
+                    
+                        list<EI_Payment__c>eiPaymentList = [select id, Reference_Number__c, Invoice_Date__c, SAP_to_EI_Date__c, Check_Number_EI__c, Check_Date_EI__c, Total_Incentive_EI__c, Payee_Name_EI__c, Check_Status__c, Check_Stopped_Date__c from EI_Payment__c where Reference_Number__c IN : mapReferencePayment.keyset() OR Check_Number_EI__c IN : mapCheckPayment.keyset()];                  
+                        if(!eiPaymentList.isEmpty()){
+                            List<EI_Payment__C> updatePaymentList = new List<EI_Payment__c>();
+                            for(EI_Payment__c payment : eiPaymentList){                           
+
+                                /*
+                                * Process Check Issues!
+                                */
+                                system.debug ('###Processing payments in for loop!')    ;       
+                                if(mapReferencePayment != null && mapReferencePayment.containsKey(payment.Reference_Number__c)){
+                                   system.debug ('###Processing payments - check Issues!')  ;   
+                                     
+                                   if(string.isNotblank(mapReferencePayment.get(payment.Reference_Number__c).DocDate)) {                                                                      
+                                      payment.Check_Date_EI__c = convertJSONFormatDate(mapReferencePayment.get(payment.Reference_Number__c).DatePrinted);                                                                      
+                                   }  
+                                   
+                                   system.debug('### inside for loop 1');
+                                       //payment.Check_Date_EI__c = date.valueOf(datetime.newInstance(mapReferencePayment.get(payment.Reference_Number__c).DocDate));
+                                   if(string.isNotblank(mapReferencePayment.get(payment.Reference_Number__c).CheckNumber))
+                                      payment.Check_Number_EI__c = mapReferencePayment.get(payment.Reference_Number__c).CheckNumber;
+                                                                    system.debug('### inside for loop 2');
+                                   if(string.isNotblank(mapReferencePayment.get(payment.Reference_Number__c).DocPaymentNumber))
+                                      payment.Payment_Document_Number__c = mapReferencePayment.get(payment.Reference_Number__c).DocPaymentNumber;
+                                                                          system.debug('### inside for loop 3');
+                                   if(string.isNotblank(mapReferencePayment.get(payment.Reference_Number__c).PaymentAmt))
+                                      payment.Printed_Check_Amount__c = double.valueOf(mapReferencePayment.get(payment.Reference_Number__c).PaymentAmt);
+                                                                    system.debug('### inside for loop 4');
+                                   if(mapReferencePayment.get(payment.Reference_Number__c).CheckStatus != null){
+                                      String strCheckStatus = mapReferencePayment.get(payment.Reference_Number__c).CheckStatus != null ? mapReferencePayment.get(payment.Reference_Number__c).CheckStatus : '';
+                                                                     system.debug('### inside for loop 5');
+                                      if (strCheckStatus == 'I')
+                                          payment.Check_Status__c = 'P - Paid';
+                                   }
+                                                                                                     
+                                 }
+                                 
+                                 /*
+                                  * Process Check Cancellations!
+                                 */
+                                  if(mapCheckPayment != null && payment.Check_Number_EI__c != null && mapCheckPayment.containsKey(payment.Check_Number_EI__c)){
+                                     system.debug ('###Processing payments - check cancellations!')  ;     
+ 
+                                     if(mapCheckPayment.get(payment.Check_Number_EI__c).CheckStatus != null){
+                                        String strCheckStatus = mapCheckPayment.get(payment.Check_Number_EI__c).CheckStatus != null ? mapCheckPayment.get(payment.Check_Number_EI__c).CheckStatus : '';
+                      
+                                        if (strCheckStatus == 'C')
+                                            payment.Check_Status__c = 'S - Stopped/Canceled';
+                                            
+                                        if (string.isNotblank(mapCheckPayment.get(payment.Check_Number_EI__c).DocDate)){
+                                            payment.Check_Stopped_Date__c = convertJSONFormatDate(mapCheckPayment.get(payment.Check_Number_EI__c).DocDate);                          
+                                        }                                
+                                     }  
+                                  }
+                                  
+                                  //Append string to send in email!
+                                  recordString = payment.Reference_Number__c+'\t'+payment.Check_Number_EI__c+'\t'+payment.Payee_Name_EI__c+'\t'+payment.Printed_Check_Amount__c +'\t'+payment.Check_Status__c+'\t'+payment.Check_Date_EI__c+'\t'+payment.Check_Stopped_Date__c+'\t'+payment.Payment_Document_Number__c+'\n';
+                                  finalExcelStr = finalExcelStr + recordString;
+                                  
+                                  totalValidAppCnt++;
+                                  
+                                  payment.SAP_to_EI_Date__c = system.today();
+                                  updatePaymentList.add(payment);
+                                 
+                                  system.debug('### list size ' + updatePaymentList.size());
+  
+                              }
+                              
+                              String sysAdminError;
+                              if (updatePaymentList.size() > 0){
+                                  
+                                  system.debug ('###Update List size for payment records: '+updatePaymentList.size());
+                
+                                  Database.SaveResult[] SR = Database.update(updatePaymentList, false);
+            
+                                  for(Integer i =0; i < SR.size(); i++) {
+                                    if(!SR[i].isSuccess()) {
+                                        sysAdminError += updatePaymentList[i].Id+'-'+SR[i].getErrors()[0].getMessage()+'\n';
+                                    }                    
+                                  }
+                              }
+                              if(!String.isBlank(sysAdminError)) {
+                                  EI_CreateErrorLog.upsertException(EI_CreateErrorLog.logException('EIPaymentSAP2EIConfirmation', new EI_BatchException(sysAdminError)));
+                              }                                
+                        }                                           
+                    }
+                }
+            }
+                
+            //Send email with log!
+            system.debug('@@@@Final Excel String....'+finalExcelStr);
+        
+            sendInboundEmail(totalValidAppCnt, finalExcelStr);      
+        
+            return 'EI Payments confirmation processed successfully!';
+        }
+        
+        catch(exception e){
+            system.debug('@@@___'+e.getMessage()+'______'+e.getLineNumber());
+            return e.getMessage();
+        }
+    }
+    
+    public static date convertJSONFormatDate (string secs) {
+
+       /*
+       Convert JSON date format to date in MM-DD-YYYY format
+       */
+       system.debug ('###Seconds....' + secs);
+       secs = secs.split('\\(')[1].split('\\)')[0]; // pull out the seconds
+       system.debug ('###Seconds after split....' + secs);
+       Datetime dt = Datetime.newInstance(Long.valueOf(secs));
+       Date docDate = dt.date();
+       system.debug('### Date result...'+docDate);    
+                                
+       return docDate;                                  
+
+    }
+    
+    public static void sendInboundEmail(Integer totalRecCount, string finalExcelStr){
+    
+        Payments_Settings_CS__c paymentCustomSetting = Payments_Settings_CS__c.getInstance('EV SITE');
+    
+        //string strEmailList = system.label.EIPaymentEITOSAPEmailList;
+        string strEmailList = paymentCustomSetting.SAP_To_EI_Email__c;
+        system.debug ('@@@Email....'+ strEmailList);
+        string strEmailSubject = 'EV Site Payment Checks Processed';
+        string strEmailBody;
+        string strProgram = paymentCustomSetting.Name.deleteWhiteSpace();
+        string fileName = 'SAP_' + strProgram + 'TOEI_' + Datetime.now().format('MM-dd-YYYY') + '.xls';
+        
+        //filename = fileName + Datetime.now().format('MM-dd-YYYY') + '.csv';
+        //'Run Date/Time: '+ string.valueof(Datetime.now().format('MM-dd-YYYY\' \'HH:mm:ss'))
+        if (totalRecCount != 0) {
+            
+            strEmailBody = '';
+            strEmailBody = ('Attached file has the details of Payments processed on: ' + string.valueof(Datetime.now().format('MM-dd-YYYY\' \'HH:mm:ss')) + '<br/><br>' +
+                    'Total rows processed: ' + totalRecCount + '<br/><br><br>'
+            );
+            
+        } else {
+            strEmailBody = ('There are no payments processed on: ' + string.valueof(Datetime.now().format('MM-dd-YYYY\' \'HH:mm:ss')) + '<br/><br>');
+        }
+        EV_PaymentUtility paymentUtility = new EV_PaymentUtility();
+        paymentUtility.sendEmailWithAttachment(strEmailList, strEmailSubject, strEmailBody, finalExcelStr, fileName, true);
+    
+    } 
+       
+}
